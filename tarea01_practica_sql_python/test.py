@@ -7,19 +7,9 @@ try:
     print("¡Conexión a la base de datos 'libreria.db' establecida con éxito!")
 
     # --- Consultas SQL ---
-    generos_nuevos = [('Terror', 70, 'Genero literario que busca provocar miedo, suspenso y emociones intensas en el lector'),
-    ('Drama', 72, 'Obras que exploran conflictos humanos profundos y emocionales'),
-    ('Humor', 68, 'Literatura que busca entretener y provocar risa en el lector'),
-    ]
-
-    for genero in generos_nuevos:
-        cursor.execute(f"INSERT INTO genero (G_nombre, G_popularidad, G_descripcion) VALUES {genero}")
     cursor.execute("SELECT * FROM genero")
     for ficha in cursor.fetchall():
         print(ficha)
-
-    conn_lib.commit()
-    print("Cambios guardados en la base de datos (commit realizado).")
     
 except sqlite3.Error as error:
     print("Error al conectar con la base de datos:", error)

@@ -5,7 +5,6 @@
 #include <Adafruit_BME280.h>
 #include <WiFi.h>
 
-// --- Configuración ---
 #define SDA_PIN 21
 #define SCL_PIN 22
 #define BUTTON_PIN 4
@@ -17,13 +16,17 @@ Adafruit_BME280 bme;
 
 // Variables
 unsigned long startTime;
-int contador = 0; // 0=Temp(K), 1=Hum(%), 2=Pres(Pa), 3=Pelón
+// Variables Hora
+int realHour = 0, realMin = 0, realSec = 0;
+unsigned long lastTimeSync = 0;
+
+int contador = 0; 
 int lastButtonState = HIGH;
 int buttonState;
 unsigned long lastDebounceTime = 0;
 unsigned long debounceDelay = 50;
+String macAddress; 
 
-// Declaración de funciones
 void mostrarSoloTemperatura(float tempC);
 void mostrarSoloHumedad(float hum);
 void mostrarSoloPresion(float presHPa);
@@ -31,61 +34,74 @@ void mostrarLogoPelon();
 
 void setup() {
   Serial.begin(115200);
-  pinMode(BUTTON_PIN, INPUT_PULLUP);
+  // --- FIX CRÍTICO: Timeout corto para no bloquear datos ---
+  Serial.setTimeout(50); 
+  // --------------------------------------------------------
   
-  Wire.begin(SDA_PIN, SCL_PIN);
-  if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
-    Serial.println(F("Error OLED")); while (1);
-  }
+  pinMode(BUTTON_PIN, INPUT_PULLUP);
+  WiFi.mode(WIFI_STA); 
 
-  // Inicialización BME280 (Intento doble dirección)
+  Wire.begin(SDA_PIN, SCL_PIN);
+  if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) { for(;;); }
+
   if (!bme.begin(0x76)) { 
      if (!bme.begin(0x77)) {
-        display.clearDisplay();
-        display.setCursor(0,0); display.println("Error Sensor"); display.display();
-        while (1);
+        display.clearDisplay(); display.println("Error Sensor"); display.display(); while (1);
      }
   }
 
-  // --- ESTRATEGIA DE SINCRONIZACIÓN DE ID (5 SEGUNDOS) ---
-  String mac = WiFi.macAddress();
-  unsigned long inicioID = millis();
+  macAddress = WiFi.macAddress();
   
-  // Bucle de 5 segundos enviando el ID constantemente
-  while(millis() - inicioID < 5000) {
-    Serial.println(); // Salto de línea para limpiar
-    Serial.print("ID_THB:");
-    Serial.println(mac);
-    
-    // Mostrar cuenta regresiva en pantalla
-    display.clearDisplay();
-    display.setTextSize(2); display.setTextColor(WHITE);
-    display.setCursor(0,0); display.println("CONECTA YA");
-    display.setTextSize(1);
-    display.setCursor(0,30); display.println("Enviando ID a PC...");
-    display.setCursor(0,45); display.print("MAC: "); display.println(mac);
-    display.setCursor(0,55); display.print("Tiempo: "); display.print(5 - (millis() - inicioID)/1000); display.println("s");
-    display.display();
-    
-    delay(500); // Enviar cada medio segundo
-  }
-  // -------------------------------------------------------
+  // Pantalla de carga
+  display.clearDisplay();
+  display.setTextSize(1); display.setTextColor(WHITE);
+  display.setCursor(0,10); display.println("SISTEMA PELON");
+  display.setCursor(0,30); display.println("ID MAC:");
+  display.setCursor(0,45); display.println(macAddress);
+  display.display();
+  delay(1000);
 
   startTime = millis();
-  // Encabezado
-  Serial.println("INICIO,TEMPERATURA,HUMEDAD,PRESION");
+  lastTimeSync = millis(); 
 }
 
 void loop() {
-  // Lectura de Sensores
+  // --- 1. LECTURA NO BLOQUEANTE DE HORA ---
+  if (Serial.available() > 0) {
+    String input = Serial.readStringUntil('\n');
+    input.trim(); // Quitar espacios basura
+    if (input.startsWith("T:")) {
+      realHour = input.substring(2, 4).toInt();
+      realMin = input.substring(5, 7).toInt();
+      realSec = input.substring(8, 10).toInt();
+      lastTimeSync = millis(); 
+    }
+  }
+
+  // Actualizar reloj local
+  unsigned long delta = (millis() - lastTimeSync) / 1000;
+  long totalSec = realHour * 3600L + realMin * 60L + realSec + delta;
+  int currentSec = totalSec % 60;
+  int currentMin = (totalSec / 60) % 60;
+  int currentHour = (totalSec / 3600) % 24;
+
   float tempC = bme.readTemperature();
   float hum = bme.readHumidity();
   float presHPa = bme.readPressure() / 100.0F; 
 
-  // --- Botón ---
+  // --- 2. ENVIAR DATOS (ID SIEMPRE PRIMERO) ---
+  // IMPORTANTE: Enviamos todo en una sola línea o en bloque compacto
+  Serial.print("ID:"); Serial.println(macAddress);
+  
+  // Datos: Timestamp, Temp, Hum, Pres
+  Serial.print(millis()); Serial.print(",");
+  Serial.print(tempC, 2); Serial.print(",");
+  Serial.print(hum, 2); Serial.print(",");
+  Serial.println(presHPa, 2);
+
+  // Lógica Botón
   int reading = digitalRead(BUTTON_PIN);
   if (reading != lastButtonState) lastDebounceTime = millis();
-  
   if ((millis() - lastDebounceTime) > debounceDelay) {
     if (reading != buttonState) {
       buttonState = reading;
@@ -97,68 +113,46 @@ void loop() {
   }
   lastButtonState = reading;
   
-  // --- Calcular Tiempo ---
-  unsigned long tiempo = millis() - startTime;
-  int horas = (tiempo / 3600000) % 24;
-  int minutos = (tiempo / 60000) % 60;
-  int segundos = (tiempo / 1000) % 60;
-  
-  // --- Renderizado Header ---
+  // Renderizado OLED
   display.clearDisplay();
   display.setTextSize(1); display.setTextColor(WHITE);
+  
   display.setCursor(0, 0);
-  if (horas < 10) display.print("0"); display.print(horas); display.print(":");
-  if (minutos < 10) display.print("0"); display.print(minutos); display.print(":");
-  if (segundos < 10) display.print("0"); display.print(segundos);
+  if (currentHour < 10) display.print("0"); display.print(currentHour); display.print(":");
+  if (currentMin < 10) display.print("0"); display.print(currentMin); display.print(":");
+  if (currentSec < 10) display.print("0"); display.print(currentSec);
+
   display.setCursor(100, 0); display.print("M:"); display.print(contador);
   display.drawLine(0, 10, 128, 10, WHITE);
   
-  // --- Switch de Vistas (AHORA EN UNIDADES SI) ---
   switch(contador) {
     case 0: mostrarSoloTemperatura(tempC); break;
     case 1: mostrarSoloHumedad(hum); break;
     case 2: mostrarSoloPresion(presHPa); break;
     case 3: mostrarLogoPelon(); break;
   }
-
   display.display();
-  
-  // --- Envío a Python (Mantenemos °C y hPa para compatibilidad con DB) ---
-  Serial.print(millis()); Serial.print(",");
-  Serial.print(tempC, 2); Serial.print(",");
-  Serial.print(hum, 2); Serial.print(",");
-  Serial.println(presHPa, 2);
-  
-  delay(200);  
+  delay(500); // 0.5s para mayor fluidez
 }
 
-// --- Funciones de Pantalla (CONVERTIDAS A SI) ---
-
+// Funciones Auxiliares (SI Units)
 void mostrarSoloTemperatura(float tempC) {
-  // Convertir a KELVIN para visualización
   float tempK = tempC + 273.15;
-  
   display.setCursor(0, 25); display.setTextSize(3);
   display.print(tempK, 1); display.setTextSize(2); display.println(" K");
-  display.setTextSize(1); display.setCursor(0, 55); display.print("TEMPERATURA (SI)");
+  display.setTextSize(1); display.setCursor(0, 55); display.print("TEMP (SI)");
 }
-
 void mostrarSoloHumedad(float hum) {
   display.setCursor(0, 25); display.setTextSize(3);
   display.print(hum, 1); display.setTextSize(2); display.println(" %");
   display.setTextSize(1); display.setCursor(0, 55); display.print("HUMEDAD");
 }
-
 void mostrarSoloPresion(float presHPa) {
-  // Convertir a PASCALES para visualización (hPa * 100)
   float presPa = presHPa * 100.0;
-  
-  // Ajuste de tamaño para que quepa el número grande (ej. 101325)
   display.setCursor(0, 25); display.setTextSize(2); 
   display.print(presPa, 0); display.println(" Pa");
   display.setTextSize(1); display.setCursor(0, 55); display.print("PRESION (SI)");
 }
-
 void mostrarLogoPelon() {
   display.drawCircle(64, 32, 20, WHITE);
   display.fillCircle(56, 28, 3, WHITE);

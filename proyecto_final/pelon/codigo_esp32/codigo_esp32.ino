@@ -3,6 +3,7 @@
 #include <Adafruit_SSD1306.h>
 #include <Adafruit_Sensor.h>
 #include <Adafruit_BME280.h>
+#include <WiFi.h> // <--- 1. LIBRERÍA NECESARIA AGREGADA
 
 // --- Pines I2C del ESP32 ---
 #define SDA_PIN 21
@@ -22,13 +23,20 @@ Adafruit_BME280 bme;
 
 // --- Variables para fecha y hora ---
 unsigned long startTime;
-
 // --- Variables para el contador y botón ---
-int contador = 0;  // 0=Todos, 1=Solo Temp, 2=Solo Hum, 3=Solo Pres, 4=Pelón
+int contador = 0;
+// 0=Todos, 1=Solo Temp, 2=Solo Hum, 3=Solo Pres, 4=Pelón
 int lastButtonState = HIGH;
 int buttonState;
 unsigned long lastDebounceTime = 0;
 unsigned long debounceDelay = 50;
+
+// Declaración adelantada de funciones
+void mostrarTodosDatos(float temp, float hum, float pres);
+void mostrarSoloTemperatura(float temp);
+void mostrarSoloHumedad(float hum);
+void mostrarSoloPresion(float pres);
+void mostrarLogoPelon();
 
 void setup() {
   Serial.begin(115200);
@@ -38,7 +46,7 @@ void setup() {
   
   // Inicializa I2C con pines personalizados del ESP32
   Wire.begin(SDA_PIN, SCL_PIN);
-
+  
   // Inicializa la pantalla
   if (!display.begin(SSD1306_SWITCHCAPVCC, SCREEN_ADDRESS)) {
     Serial.println(F("SSD1306 allocation failed"));
@@ -46,18 +54,29 @@ void setup() {
   }
 
   // Inicializa sensor BME280
-  if (!bme.begin(0x77)) {
-    Serial.println(F("Could not find a valid BME280 sensor!"));
-    display.clearDisplay();
-    display.setTextSize(1);
-    display.setTextColor(SSD1306_WHITE);
-    display.setCursor(0,0);
-    display.println("ERROR BME280");
-    display.display();
-    while (1);
+  if (!bme.begin(0x76)) { // Intenta 0x76 primero
+     if (!bme.begin(0x77)) { // Si falla, intenta 0x77
+        Serial.println(F("Could not find a valid BME280 sensor!"));
+        display.clearDisplay();
+        display.setTextSize(1);
+        display.setTextColor(SSD1306_WHITE);
+        display.setCursor(0,0);
+        display.println("ERROR BME280");
+        display.display();
+        while (1);
+     }
   }
 
-  // Pantalla de inicio
+  // --- 2. OBTENER Y ENVIAR MAC ADDRESS (IDENTIFICADOR ÚNICO) ---
+  String mac = WiFi.macAddress();
+  // Pequeña pausa para asegurar que el puerto serial esté listo
+  delay(100); 
+  Serial.println(); // Limpiar basura del buffer
+  Serial.print("ID_THB:");
+  Serial.println(mac);
+  // -------------------------------------------------------------
+
+  // Pantalla de inicio (Original Pelón)
   display.clearDisplay();
   display.setTextSize(2);
   display.setTextColor(SSD1306_WHITE);
@@ -70,7 +89,7 @@ void setup() {
 
   startTime = millis();
   
-  // Encabezado para Python (igual al segundo código)
+  // Encabezado para Python
   Serial.println("INICIO,TEMPERATURA,HUMEDAD,PRESION");
 }
 
@@ -82,7 +101,6 @@ void loop() {
 
   // --- Manejo del botón con debounce ---
   int reading = digitalRead(BUTTON_PIN);
-  
   if (reading != lastButtonState) {
     lastDebounceTime = millis();
   }
@@ -90,27 +108,23 @@ void loop() {
   if ((millis() - lastDebounceTime) > debounceDelay) {
     if (reading != buttonState) {
       buttonState = reading;
-      
       // Cuando el botón se presiona (va de HIGH a LOW)
       if (buttonState == LOW) {
         contador++;
         if (contador > 4) {
           contador = 0;
         }
-        // Solo mensaje de depuración, no se envía en el formato de datos
-        Serial.print("Contador cambiado a: ");
-        Serial.println(contador);
       }
     }
   }
   lastButtonState = reading;
-
+  
   // Calcular tiempo transcurrido
   unsigned long tiempo = millis() - startTime;
   int horas = (tiempo / 3600000) % 24;
   int minutos = (tiempo / 60000) % 60;
   int segundos = (tiempo / 1000) % 60;
-
+  
   // Mostrar en pantalla según el contador
   display.clearDisplay();
   display.setTextSize(1);
@@ -135,7 +149,7 @@ void loop() {
 
   // Línea separadora
   display.drawLine(0, 10, 128, 10, SSD1306_WHITE);
-
+  
   // --- Mostrar datos según el contador ---
   switch(contador) {
     case 0: // Todos los datos
@@ -156,8 +170,8 @@ void loop() {
   }
 
   display.display();
-
-  // ENVÍO MEJORADO A PYTHON - IGUAL AL SEGUNDO CÓDIGO (sin contador)
+  
+  // ENVÍO A PYTHON 
   // Formato: timestamp,temperatura,humedad,presion
   Serial.print(millis());
   Serial.print(",");
@@ -165,33 +179,24 @@ void loop() {
   Serial.print(",");
   Serial.print(humedad, 2);     // 2 decimales
   Serial.print(",");
-  Serial.println(presion, 2);   // 2 decimales
-
-  delay(200);  // Reducido para mejor respuesta del botón
+  Serial.println(presion, 2);
+  
+  delay(200);  
 }
 
-// --- Funciones para mostrar diferentes vistas ---
+// --- Funciones auxiliares (Originales) ---
 
 void mostrarTodosDatos(float temp, float hum, float pres) {
-  // Temperatura
   display.setCursor(0, 15);
   display.setTextSize(2);
-  display.print("Temp: ");
-  display.print(temp, 1);
-  display.println(" C");
+  display.print("Temp: "); display.print(temp, 1); display.println(" C");
 
-  // Humedad
   display.setCursor(0, 35);
-  display.print("Hum:  ");
-  display.print(hum, 1);
-  display.println(" %");
-
-  // Presión
+  display.print("Hum:  "); display.print(hum, 1); display.println(" %");
+  
   display.setCursor(0, 55);
   display.setTextSize(1);
-  display.print("Pres: ");
-  display.print(pres, 0);
-  display.println(" hPa");
+  display.print("Pres: "); display.print(pres, 0); display.println(" hPa");
 }
 
 void mostrarSoloTemperatura(float temp) {
@@ -228,27 +233,15 @@ void mostrarSoloPresion(float pres) {
 }
 
 void mostrarLogoPelon() {
-  // Dibujar un logo "pelón" - una cara simple calva
-  // Cabeza redonda (círculo)
   display.drawCircle(64, 32, 20, SSD1306_WHITE);
-  
-  // Ojos
   display.fillCircle(56, 28, 3, SSD1306_WHITE);  // Ojo izquierdo
   display.fillCircle(72, 28, 3, SSD1306_WHITE);  // Ojo derecho
-  
-  // Boca sonriente (usando líneas para simular una sonrisa)
-  display.drawLine(58, 40, 70, 40, SSD1306_WHITE);  // Línea recta de boca
-  // O hacer una sonrisa más elaborada con puntos
+  display.drawLine(58, 40, 70, 40, SSD1306_WHITE);
   display.drawPixel(57, 39, SSD1306_WHITE);
   display.drawPixel(71, 39, SSD1306_WHITE);
-  
-  // Texto "PELÓN" debajo
   display.setTextSize(1);
   display.setCursor(50, 55);
   display.print("PELON");
-  
-  // Opcional: agregar algún detalle extra para hacerlo más "pelón"
-  // Podemos dibujar algunas líneas para simular reflejo en la cabeza calva
   display.drawLine(60, 18, 68, 18, SSD1306_WHITE);
   display.drawLine(58, 20, 70, 20, SSD1306_WHITE);
 }

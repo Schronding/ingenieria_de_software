@@ -14,6 +14,8 @@ matplotlib.use("TkAgg")
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import matplotlib.dates as mdates
+import csv
+from tkinter import filedialog
 
 # ============================================================
 # CONFIGURACIÓN GLOBAL
@@ -46,7 +48,7 @@ ejecutando = True
 
 # Datos DB
 DB_HOST = "127.0.0.1"
-DB_USER = "root"
+DB_USER = "admin"
 DB_PASS = "1324" 
 DB_NAME = "sensores"
 
@@ -268,7 +270,14 @@ class ProfessionalLogger(ctk.CTk):
         ctk.CTkLabel(manual_frame, text=" ➜ ").pack(side="left")
         self.entry_end = ctk.CTkEntry(manual_frame, width=160, placeholder_text="Fin")
         self.entry_end.pack(side="left", padx=5)
+        
+        # BOTONES
         ctk.CTkButton(manual_frame, text="BUSCAR EN BD", fg_color="#FBC02D", text_color="black", hover_color="#F9A825", command=self.consultar_db_seguro).pack(side="left", padx=20)
+        
+        # --- NUEVO BOTÓN EXPORTAR ---
+        self.btn_export = ctk.CTkButton(manual_frame, text="EXPORTAR CSV", fg_color="#00897B", hover_color="#00695C", command=self.exportar_datos)
+        self.btn_export.pack(side="left", padx=5)
+        # ----------------------------
 
         self.tree_hist = ttk.Treeview(self.tab_history, columns=("fecha", "temp", "hum", "pres"), show="headings")
         self.tree_hist.heading("fecha", text="Fecha Hora"); self.tree_hist.column("fecha", width=180)
@@ -277,6 +286,30 @@ class ProfessionalLogger(ctk.CTk):
         self.tree_hist.heading("pres", text="Pres"); self.tree_hist.column("pres", width=80)
         self.tree_hist.grid(row=2, column=0, sticky="nsew", padx=10, pady=10)
 
+    def exportar_datos(self):
+            items = self.tree_hist.get_children()
+            if not items:
+                messagebox.showwarning("Exportar", "Sin datos. Realiza una búsqueda primero.")
+                return
+
+            filename = filedialog.asksaveasfilename(
+                defaultextension=".csv",
+                filetypes=[("CSV", "*.csv"), ("Texto", "*.txt")],
+                title="Guardar Reporte"
+            )
+            if not filename: return
+
+            try:
+                with open(filename, mode='w', newline='', encoding='utf-8') as f:
+                    writer = csv.writer(f)
+                    # Encabezados claros
+                    writer.writerow(["Fecha", "Temperatura", "Humedad", "Presion"])
+                    for item in items:
+                        writer.writerow(self.tree_hist.item(item)['values'])
+                messagebox.showinfo("Éxito", "Archivo guardado correctamente.")
+            except Exception as e:
+                messagebox.showerror("Error", f"Error al guardar: {e}")
+    
     def set_range(self, mode):
         now = datetime.now()
         start, end = "", ""

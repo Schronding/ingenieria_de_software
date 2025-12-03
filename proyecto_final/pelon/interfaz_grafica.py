@@ -60,9 +60,14 @@ def hilo_receptor():
                 if arduino.in_waiting > 0:
                     linea = arduino.readline().decode('utf-8').strip()
                     
+                    # --- FIX: SPLIT LIMITADO PARA OBTENER MAC COMPLETA ---
                     if linea.startswith("ID:") or linea.startswith("ID_THB:"):
-                        raw_id = linea.split(":")[1]
-                        if val_id_locked is None: val_id_locked = raw_id
+                        # split(":", 1) asegura que solo corte en el primer ':', 
+                        # preservando los ':' de la MAC address.
+                        parts = linea.split(":", 1)
+                        if len(parts) > 1:
+                            raw_id = parts[1].strip()
+                            if val_id_locked is None: val_id_locked = raw_id
                         continue
 
                     if not linea or "INICIO" in linea: continue
@@ -87,6 +92,7 @@ def hilo_receptor():
                                 temp_k = t + 273.15
                                 pres_pa = p * 100.0
                                 dispositivo = val_live_id if val_live_id != "---" else "Desconocido"
+                                # Guardamos el ID en la DB
                                 sql = "INSERT INTO mediciones (temperatura, humedad, presion, fecha_hora, dispositivo_id) VALUES (%s, %s, %s, %s, %s)"
                                 cursor_db.execute(sql, (temp_k, h, pres_pa, ahora, dispositivo))
                                 conexion_db.commit()
@@ -130,7 +136,7 @@ class ProfessionalLogger(ctk.CTk):
         info_frame = ctk.CTkFrame(self.sidebar, fg_color="#263238")
         info_frame.grid(row=1, column=0, padx=15, pady=10, sticky="ew")
         ctk.CTkLabel(info_frame, text="ID SISTEMA (MAC):", font=("Arial", 10, "bold"), text_color="gray").pack(pady=(5,0))
-        ctk.CTkLabel(info_frame, textvariable=self.var_id_display, font=("Consolas", 14, "bold"), text_color="#4FC3F7").pack()
+        ctk.CTkLabel(info_frame, textvariable=self.var_id_display, font=("Consolas", 12, "bold"), text_color="#4FC3F7").pack()
         ctk.CTkLabel(info_frame, text="ALIAS / APODO:", font=("Arial", 10, "bold"), text_color="gray").pack(pady=(5,0))
         ctk.CTkLabel(info_frame, textvariable=self.var_alias_display, font=("Arial", 16, "bold"), text_color="#FFB74D").pack(pady=(0,10))
         ctk.CTkLabel(self.sidebar, text="CONEXIÓN SERIAL", anchor="w", font=ctk.CTkFont(size=12, weight="bold")).grid(row=2, column=0, padx=20, pady=(20, 0), sticky="ew")
@@ -230,11 +236,14 @@ class ProfessionalLogger(ctk.CTk):
         ctk.CTkButton(manual_frame, text="BUSCAR", fg_color="#FBC02D", text_color="black", hover_color="#F9A825", command=self.consultar_db_seguro).pack(side="left", padx=20)
         self.btn_export = ctk.CTkButton(manual_frame, text="EXPORTAR (SI)", fg_color="#00897B", hover_color="#00695C", command=self.exportar_datos)
         self.btn_export.pack(side="left", padx=5)
-        self.tree_hist = ttk.Treeview(self.tab_history, columns=("fecha", "temp", "hum", "pres"), show="headings")
-        self.tree_hist.heading("fecha", text="Fecha Hora"); self.tree_hist.column("fecha", width=180)
-        self.tree_hist.heading("temp", text="Temp (Visual)"); self.tree_hist.column("temp", width=90)
-        self.tree_hist.heading("hum", text="Hum"); self.tree_hist.column("hum", width=80)
-        self.tree_hist.heading("pres", text="Pres (Visual)"); self.tree_hist.column("pres", width=90)
+        
+        # --- TABLA ACTUALIZADA CON COLUMNA ID ---
+        self.tree_hist = ttk.Treeview(self.tab_history, columns=("fecha", "temp", "hum", "pres", "dev"), show="headings")
+        self.tree_hist.heading("fecha", text="Fecha Hora"); self.tree_hist.column("fecha", width=160)
+        self.tree_hist.heading("temp", text="Temp"); self.tree_hist.column("temp", width=80)
+        self.tree_hist.heading("hum", text="Hum"); self.tree_hist.column("hum", width=60)
+        self.tree_hist.heading("pres", text="Presion"); self.tree_hist.column("pres", width=80)
+        self.tree_hist.heading("dev", text="ID Disp"); self.tree_hist.column("dev", width=150) # Nueva Columna
         self.tree_hist.grid(row=2, column=0, sticky="nsew", padx=10, pady=10)
 
     def set_range(self, mode):
@@ -252,7 +261,8 @@ class ProfessionalLogger(ctk.CTk):
         if not s or not e: messagebox.showwarning("!", "Faltan fechas"); return
         for item in self.tree_hist.get_children(): self.tree_hist.delete(item)
         try:
-            sql = "SELECT fecha_hora, temperatura, humedad, presion FROM mediciones WHERE fecha_hora BETWEEN %s AND %s ORDER BY fecha_hora DESC"
+            # --- CONSULTAMOS TAMBIEN EL ID ---
+            sql = "SELECT fecha_hora, temperatura, humedad, presion, dispositivo_id FROM mediciones WHERE fecha_hora BETWEEN %s AND %s ORDER BY fecha_hora DESC"
             cursor_db.execute(sql, (s, e))
             rows = cursor_db.fetchall()
         except: 
@@ -264,11 +274,15 @@ class ProfessionalLogger(ctk.CTk):
         for r in rows:
             t_kelvin = r[1]
             pres_pa = r[3]
+            dev_id = r[4] # ID de la base de datos
+            
             t_show, u_t, p_show, u_p = self.get_converted_vals(0, 0) 
             if self.unit_mode == 0: t_show = t_kelvin - 273.15; p_show = pres_pa / 100.0
             elif self.unit_mode == 1: t_show = (t_kelvin - 273.15) * 9/5 + 32; p_show = pres_pa / 100.0
             elif self.unit_mode == 2: t_show = t_kelvin; p_show = pres_pa
-            self.tree_hist.insert("", "end", values=(r[0], f"{t_show:.2f} {u_t}", r[2], f"{p_show:.1f} {u_p}"))
+            
+            # Insertamos con el ID
+            self.tree_hist.insert("", "end", values=(r[0], f"{t_show:.2f} {u_t}", r[2], f"{p_show:.1f} {u_p}", dev_id))
 
     def exportar_datos(self):
         items = self.tree_hist.get_children()
@@ -284,17 +298,22 @@ class ProfessionalLogger(ctk.CTk):
                 for item in items:
                     vals = self.tree_hist.item(item)['values']
                     fecha = vals[0]; hum = vals[2]
+                    # Obtenemos el ID directamente de la tabla (índice 4)
+                    dev_id = vals[4] 
+
+                    # Re-parseo para unidades SI
                     raw_t_str = vals[1].split()[0]
                     raw_p_str = vals[3].split()[0]
                     unit_t = vals[1].split()[1]
                     t_val = float(raw_t_str)
                     p_val = float(raw_p_str)
+                    
                     t_si = t_val
                     p_si = p_val
                     if "°C" in unit_t: t_si = t_val + 273.15
                     elif "°F" in unit_t: t_si = (t_val - 32) * 5/9 + 273.15
                     if "hPa" in vals[3]: p_si = p_val * 100.0
-                    dev_id = val_id_locked if val_id_locked else "Desconocido"
+                    
                     writer.writerow([fecha, f"{t_si:.2f}", hum, f"{p_si:.0f}", dev_id])
             messagebox.showinfo("Éxito", "Exportado en Unidades SI (K/Pa).")
         except Exception as e: messagebox.showerror("Error", str(e))
@@ -391,18 +410,10 @@ class ProfessionalLogger(ctk.CTk):
             times = session_data["time"][start_idx:]
             plot_temps = []; plot_press = []
             for i in range(start_idx, len(session_data["time"])):
-                # --- CORRECCIÓN CRÍTICA AQUÍ ---
-                ts, _, _, ps = self.get_converted_vals(session_data["temp"][i], session_data["pres"][i])
-                # Corregido: Obtenemos ts (indice 0) y ps (indice 3), descartamos unidades
-                # Espera, get_converted_vals retorna (val_t, unit_t, val_p, unit_p)
-                # Índices: 0=val_t, 1=unit_t, 2=val_p, 3=unit_p
-                # Así que ts es índice 0 y ps es índice 2
-                
-                # RE-CORRECCIÓN EXPLÍCITA
+                # --- CORRECCIÓN FINAL ---
                 res = self.get_converted_vals(session_data["temp"][i], session_data["pres"][i])
-                ts = res[0]
-                ps = res[2]
-                
+                ts = res[0] # Valor Num Temp
+                ps = res[2] # Valor Num Pres
                 plot_temps.append(ts); plot_press.append(ps)
             
             hums = session_data["hum"][start_idx:]

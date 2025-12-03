@@ -10,6 +10,8 @@ import csv
 from datetime import datetime, timedelta
 import customtkinter as ctk
 from tkinter import ttk, messagebox, filedialog
+from tkcalendar import DateEntry 
+
 import matplotlib
 matplotlib.use("TkAgg") 
 import matplotlib.pyplot as plt
@@ -21,18 +23,25 @@ import matplotlib.dates as mdates
 # ============================================================
 BAUD_RATE = 115200
 ARCHIVO_APODOS = "device_nicknames.json"
-# DB CONFIG (Debian User)
+# DB CONFIG
 DB_HOST = "127.0.0.1"
 DB_USER = "admin"  
 DB_PASS = "1324" 
 DB_NAME = "sensores"
 
+# VARIABLES GLOBALES
 session_data = { "time": [], "temp": [], "hum": [], "pres": [] }
-val_id_locked = None 
-val_live_id = "---"
-val_temp = 0.0; val_hum = 0.0; val_pres = 0.0
+val_id_locked = None          # Aquí se guardará la MAC
+val_alias_hardware = "---"    # Aquí el apodo del chip
+val_temp = 0.0
+val_hum = 0.0
+val_pres = 0.0
 paquetes_recibidos = 0 
-arduino = None; conexion_db = None; cursor_db = None; db_activa = False; ejecutando = True
+arduino = None
+conexion_db = None
+cursor_db = None
+db_activa = False
+ejecutando = True
 
 ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme("blue")
@@ -53,52 +62,64 @@ def guardar_apodo(id_real, nuevo_apodo):
 apodos_cache = cargar_apodos()
 
 def hilo_receptor():
-    global val_id_locked, val_live_id, val_temp, val_hum, val_pres, paquetes_recibidos
+    global val_id_locked, val_alias_hardware, val_temp, val_hum, val_pres, paquetes_recibidos
     while ejecutando:
         if arduino and arduino.is_open:
             try:
                 if arduino.in_waiting > 0:
-                    linea = arduino.readline().decode('utf-8').strip()
-                    
-                    # --- FIX: SPLIT LIMITADO PARA OBTENER MAC COMPLETA ---
-                    if linea.startswith("ID:") or linea.startswith("ID_THB:"):
-                        # split(":", 1) asegura que solo corte en el primer ':', 
-                        # preservando los ':' de la MAC address.
-                        parts = linea.split(":", 1)
-                        if len(parts) > 1:
-                            raw_id = parts[1].strip()
-                            if val_id_locked is None: val_id_locked = raw_id
+                    try:
+                        linea = arduino.readline().decode('utf-8', errors='ignore').strip()
+                    except:
                         continue
-
-                    if not linea or "INICIO" in linea: continue
-                    partes = linea.split(",")
-                    if len(partes) >= 4:
+                    
+                    # --- 1. DETECCIÓN DE ID ---
+                    if linea.startswith("ID:") or linea.startswith("ID_THB:"):
                         try:
-                            t, h, p = float(partes[1]), float(partes[2]), float(partes[3])
-                        except ValueError: continue 
-                        
-                        ahora = datetime.now()
-                        val_live_id = val_id_locked if val_id_locked else "Detectando..."
-                        val_temp, val_hum, val_pres = t, h, p
-                        paquetes_recibidos += 1
+                            clean_content = linea.split(":", 1)[1]
+                            if "|" in clean_content:
+                                parts = clean_content.split("|")
+                                val_id_locked = parts[0].strip()
+                                val_alias_hardware = parts[1].strip()
+                            else:
+                                val_id_locked = clean_content.strip()
+                        except: 
+                            pass
+                        continue 
 
-                        session_data["time"].append(ahora)
-                        session_data["temp"].append(t)
-                        session_data["hum"].append(h)
-                        session_data["pres"].append(p)
-                        
-                        if db_activa and cursor_db:
+                    # --- 2. DETECCIÓN DE DATOS ---
+                    if "," in linea:
+                        partes = linea.split(",")
+                        if len(partes) >= 4:
                             try:
-                                temp_k = t + 273.15
-                                pres_pa = p * 100.0
-                                dispositivo = val_live_id if val_live_id != "---" else "Desconocido"
-                                # Guardamos el ID en la DB
-                                sql = "INSERT INTO mediciones (temperatura, humedad, presion, fecha_hora, dispositivo_id) VALUES (%s, %s, %s, %s, %s)"
-                                cursor_db.execute(sql, (temp_k, h, pres_pa, ahora, dispositivo))
-                                conexion_db.commit()
-                            except Exception as e: pass
-            except: time.sleep(0.1)
-        else: time.sleep(0.1)
+                                t = float(partes[1])
+                                h = float(partes[2])
+                                p = float(partes[3])
+                                
+                                ahora = datetime.now()
+                                val_temp, val_hum, val_pres = t, h, p
+                                paquetes_recibidos += 1
+
+                                session_data["time"].append(ahora)
+                                session_data["temp"].append(t)
+                                session_data["hum"].append(h)
+                                session_data["pres"].append(p)
+                                
+                                if db_activa and cursor_db:
+                                    try:
+                                        temp_k = t + 273.15
+                                        pres_pa = p * 100.0
+                                        dispositivo = val_id_locked if val_id_locked else "Desconocido"
+                                        sql = "INSERT INTO mediciones (temperatura, humedad, presion, fecha_hora, dispositivo_id) VALUES (%s, %s, %s, %s, %s)"
+                                        cursor_db.execute(sql, (temp_k, h, pres_pa, ahora, dispositivo))
+                                        conexion_db.commit()
+                                    except: 
+                                        pass
+                            except ValueError: 
+                                continue 
+            except Exception: 
+                time.sleep(0.1)
+        else: 
+            time.sleep(0.1)
 
 class ProfessionalLogger(ctk.CTk):
     def __init__(self):
@@ -125,8 +146,21 @@ class ProfessionalLogger(ctk.CTk):
         self.init_footer()
         self.escanear_puertos()
         self.reconectar_db() 
-        self.update_ui_loop() 
+        self.update_ui_loop()
+        
+        # Sincronización de hora en background
+        self.background_time_sync()
+        
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
+
+    def background_time_sync(self):
+        if self.is_connected and arduino:
+            try:
+                now_str = datetime.now().strftime("%H:%M:%S")
+                cmd = f"T:{now_str}\n"
+                arduino.write(cmd.encode())
+            except: pass
+        self.after(10000, self.background_time_sync) 
 
     def init_sidebar(self):
         self.sidebar = ctk.CTkFrame(self, width=260, corner_radius=0)
@@ -137,7 +171,7 @@ class ProfessionalLogger(ctk.CTk):
         info_frame.grid(row=1, column=0, padx=15, pady=10, sticky="ew")
         ctk.CTkLabel(info_frame, text="ID SISTEMA (MAC):", font=("Arial", 10, "bold"), text_color="gray").pack(pady=(5,0))
         ctk.CTkLabel(info_frame, textvariable=self.var_id_display, font=("Consolas", 12, "bold"), text_color="#4FC3F7").pack()
-        ctk.CTkLabel(info_frame, text="ALIAS / APODO:", font=("Arial", 10, "bold"), text_color="gray").pack(pady=(5,0))
+        ctk.CTkLabel(info_frame, text="ALIAS (HARDWARE):", font=("Arial", 10, "bold"), text_color="gray").pack(pady=(5,0))
         ctk.CTkLabel(info_frame, textvariable=self.var_alias_display, font=("Arial", 16, "bold"), text_color="#FFB74D").pack(pady=(0,10))
         ctk.CTkLabel(self.sidebar, text="CONEXIÓN SERIAL", anchor="w", font=ctk.CTkFont(size=12, weight="bold")).grid(row=2, column=0, padx=20, pady=(20, 0), sticky="ew")
         self.combo_ports = ctk.CTkComboBox(self.sidebar, values=["Buscando..."])
@@ -220,103 +254,110 @@ class ProfessionalLogger(ctk.CTk):
     def setup_history_tab(self):
         self.tab_history.grid_columnconfigure(0, weight=1)
         self.tab_history.grid_rowconfigure(2, weight=1)
-        quick_frame = ctk.CTkFrame(self.tab_history)
-        quick_frame.grid(row=0, column=0, sticky="ew", padx=10, pady=10)
-        ctk.CTkLabel(quick_frame, text="Selección Rápida:", font=("Arial", 12, "bold")).pack(side="left", padx=10)
-        ctk.CTkButton(quick_frame, text="Última Hora", width=100, fg_color="#5C6BC0", command=lambda: self.set_range("hora")).pack(side="left", padx=5)
-        ctk.CTkButton(quick_frame, text="Hoy", width=80, fg_color="#5C6BC0", command=lambda: self.set_range("hoy")).pack(side="left", padx=5)
-        ctk.CTkButton(quick_frame, text="Ayer", width=80, fg_color="#5C6BC0", command=lambda: self.set_range("ayer")).pack(side="left", padx=5)
-        manual_frame = ctk.CTkFrame(self.tab_history, fg_color="transparent")
-        manual_frame.grid(row=1, column=0, sticky="ew", padx=10, pady=5)
-        self.entry_start = ctk.CTkEntry(manual_frame, width=160, placeholder_text="Inicio")
-        self.entry_start.pack(side="left", padx=5)
-        ctk.CTkLabel(manual_frame, text=" ➜ ").pack(side="left")
-        self.entry_end = ctk.CTkEntry(manual_frame, width=160, placeholder_text="Fin")
-        self.entry_end.pack(side="left", padx=5)
-        ctk.CTkButton(manual_frame, text="BUSCAR", fg_color="#FBC02D", text_color="black", hover_color="#F9A825", command=self.consultar_db_seguro).pack(side="left", padx=20)
-        self.btn_export = ctk.CTkButton(manual_frame, text="EXPORTAR (SI)", fg_color="#00897B", hover_color="#00695C", command=self.exportar_datos)
-        self.btn_export.pack(side="left", padx=5)
         
-        # --- TABLA ACTUALIZADA CON COLUMNA ID ---
+        filter_frame = ctk.CTkFrame(self.tab_history)
+        filter_frame.grid(row=0, column=0, sticky="ew", padx=10, pady=10)
+        ctk.CTkLabel(filter_frame, text="Ver Últimos:", font=("Arial", 12, "bold")).pack(side="left", padx=10)
+        ctk.CTkButton(filter_frame, text="1 Hora", width=60, command=lambda: self.set_range("hora")).pack(side="left", padx=5)
+        ctk.CTkButton(filter_frame, text="Hoy", width=60, command=lambda: self.set_range("hoy")).pack(side="left", padx=5)
+        
+        # Boton "VER" (Visualizar Datos) solicitado
+        ctk.CTkLabel(filter_frame, text="|").pack(side="left", padx=10)
+        self.entry_start = ctk.CTkEntry(filter_frame, width=130, placeholder_text="Inicio YYYY-MM-DD")
+        self.entry_start.pack(side="left", padx=2)
+        self.entry_end = ctk.CTkEntry(filter_frame, width=130, placeholder_text="Fin YYYY-MM-DD")
+        self.entry_end.pack(side="left", padx=2)
+        ctk.CTkButton(filter_frame, text="VISUALIZAR", fg_color="#FBC02D", text_color="black", hover_color="#F9A825", command=self.consultar_db_seguro).pack(side="left", padx=5)
+
+        export_frame = ctk.CTkFrame(self.tab_history, fg_color="#263238")
+        export_frame.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 10))
+        
+        ctk.CTkLabel(export_frame, text="EXPORTAR PERIODO:", font=("Arial", 12, "bold"), text_color="#80CBC4").grid(row=0, column=0, padx=10, pady=10, sticky="w")
+        
+        f_start = ctk.CTkFrame(export_frame, fg_color="transparent")
+        f_start.grid(row=0, column=1, padx=5)
+        ctk.CTkLabel(f_start, text="Desde:").pack(anchor="w")
+        self.cal_start = DateEntry(f_start, width=12, background='darkblue', foreground='white', borderwidth=2, date_pattern='y-mm-dd')
+        self.cal_start.pack(side="left")
+        self.spin_hour_s = ctk.CTkComboBox(f_start, values=[f"{i:02d}" for i in range(24)], width=60); self.spin_hour_s.set("00"); self.spin_hour_s.pack(side="left", padx=2)
+        ctk.CTkLabel(f_start, text=":").pack(side="left")
+        self.spin_min_s = ctk.CTkComboBox(f_start, values=[f"{i:02d}" for i in range(60)], width=60); self.spin_min_s.set("00"); self.spin_min_s.pack(side="left", padx=2)
+
+        f_end = ctk.CTkFrame(export_frame, fg_color="transparent")
+        f_end.grid(row=0, column=2, padx=5)
+        ctk.CTkLabel(f_end, text="Hasta:").pack(anchor="w")
+        self.cal_end = DateEntry(f_end, width=12, background='darkblue', foreground='white', borderwidth=2, date_pattern='y-mm-dd')
+        self.cal_end.pack(side="left")
+        self.spin_hour_e = ctk.CTkComboBox(f_end, values=[f"{i:02d}" for i in range(24)], width=60); self.spin_hour_e.set("23"); self.spin_hour_e.pack(side="left", padx=2)
+        ctk.CTkLabel(f_end, text=":").pack(side="left")
+        self.spin_min_e = ctk.CTkComboBox(f_end, values=[f"{i:02d}" for i in range(60)], width=60); self.spin_min_e.set("59"); self.spin_min_e.pack(side="left", padx=2)
+
+        ctk.CTkButton(export_frame, text="GENERAR REPORTE (SI)", fg_color="#00897B", hover_color="#00695C", command=self.exportar_rango_calendario).grid(row=0, column=3, padx=20)
+
         self.tree_hist = ttk.Treeview(self.tab_history, columns=("fecha", "temp", "hum", "pres", "dev"), show="headings")
         self.tree_hist.heading("fecha", text="Fecha Hora"); self.tree_hist.column("fecha", width=160)
         self.tree_hist.heading("temp", text="Temp"); self.tree_hist.column("temp", width=80)
         self.tree_hist.heading("hum", text="Hum"); self.tree_hist.column("hum", width=60)
         self.tree_hist.heading("pres", text="Presion"); self.tree_hist.column("pres", width=80)
-        self.tree_hist.heading("dev", text="ID Disp"); self.tree_hist.column("dev", width=150) # Nueva Columna
+        self.tree_hist.heading("dev", text="ID Disp"); self.tree_hist.column("dev", width=150) 
         self.tree_hist.grid(row=2, column=0, sticky="nsew", padx=10, pady=10)
 
     def set_range(self, mode):
         now = datetime.now()
         start, end = "", ""
-        if mode == "hora": start = (now - timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S"); end = now.strftime("%Y-%m-%d %H:%M:%S")
-        elif mode == "hoy": start = now.strftime("%Y-%m-%d 00:00:00"); end = now.strftime("%Y-%m-%d 23:59:59")
-        elif mode == "ayer": y = now - timedelta(days=1); start = y.strftime("%Y-%m-%d 00:00:00"); end = y.strftime("%Y-%m-%d 23:59:59")
-        self.entry_start.delete(0, 'end'); self.entry_start.insert(0, start)
-        self.entry_end.delete(0, 'end'); self.entry_end.insert(0, end)
+        if mode == "hora": start = (now - timedelta(hours=1))
+        elif mode == "hoy": start = now.replace(hour=0, minute=0, second=0)
+        self.consultar_db_directo(start.strftime("%Y-%m-%d %H:%M:%S"), now.strftime("%Y-%m-%d %H:%M:%S"))
 
     def consultar_db_seguro(self):
-        global conexion_db, cursor_db
-        s, e = self.entry_start.get(), self.entry_end.get()
-        if not s or not e: messagebox.showwarning("!", "Faltan fechas"); return
+        s = self.entry_start.get()
+        e = self.entry_end.get()
+        if not s or not e:
+            messagebox.showwarning("!", "Define fechas YYYY-MM-DD")
+            return
+        self.consultar_db_directo(s + " 00:00:00", e + " 23:59:59")
+
+    def consultar_db_directo(self, s, e):
+        global cursor_db
         for item in self.tree_hist.get_children(): self.tree_hist.delete(item)
         try:
-            # --- CONSULTAMOS TAMBIEN EL ID ---
-            sql = "SELECT fecha_hora, temperatura, humedad, presion, dispositivo_id FROM mediciones WHERE fecha_hora BETWEEN %s AND %s ORDER BY fecha_hora DESC"
+            sql = "SELECT fecha_hora, temperatura, humedad, presion, dispositivo_id FROM mediciones WHERE fecha_hora BETWEEN %s AND %s ORDER BY fecha_hora DESC LIMIT 200"
             cursor_db.execute(sql, (s, e))
             rows = cursor_db.fetchall()
-        except: 
-            self.reconectar_db()
-            try: cursor_db.execute(sql, (s, e)); rows = cursor_db.fetchall()
-            except: return
-        if not rows: messagebox.showinfo("Info", "Sin datos."); return
-        
-        for r in rows:
-            t_kelvin = r[1]
-            pres_pa = r[3]
-            dev_id = r[4] # ID de la base de datos
-            
-            t_show, u_t, p_show, u_p = self.get_converted_vals(0, 0) 
-            if self.unit_mode == 0: t_show = t_kelvin - 273.15; p_show = pres_pa / 100.0
-            elif self.unit_mode == 1: t_show = (t_kelvin - 273.15) * 9/5 + 32; p_show = pres_pa / 100.0
-            elif self.unit_mode == 2: t_show = t_kelvin; p_show = pres_pa
-            
-            # Insertamos con el ID
-            self.tree_hist.insert("", "end", values=(r[0], f"{t_show:.2f} {u_t}", r[2], f"{p_show:.1f} {u_p}", dev_id))
+            for r in rows:
+                t_show, u_t, p_show, u_p = self.get_converted_vals(0, 0)
+                if self.unit_mode == 0: t_show = r[1] - 273.15; p_show = r[3] / 100.0
+                elif self.unit_mode == 1: t_show = (r[1] - 273.15) * 9/5 + 32; p_show = r[3] / 100.0
+                elif self.unit_mode == 2: t_show = r[1]; p_show = r[3]
+                self.tree_hist.insert("", "end", values=(r[0], f"{t_show:.2f} {u_t}", r[2], f"{p_show:.1f} {u_p}", r[4]))
+        except: pass
 
-    def exportar_datos(self):
-        items = self.tree_hist.get_children()
-        if not items: messagebox.showwarning("Exportar", "Sin datos. Busca primero."); return
-        filename = filedialog.asksaveasfilename(defaultextension=".txt", filetypes=[("Texto TXT", "*.txt"), ("CSV", "*.csv")], title="Guardar")
+    def exportar_rango_calendario(self):
+        d_s = self.cal_start.get_date(); t_s = f"{self.spin_hour_s.get()}:{self.spin_min_s.get()}:00"
+        d_e = self.cal_end.get_date(); t_e = f"{self.spin_hour_e.get()}:{self.spin_min_e.get()}:59"
+        
+        s_iso = f"{d_s} {t_s}"
+        e_iso = f"{d_e} {t_e}"
+
+        filename = filedialog.asksaveasfilename(defaultextension=".csv", filetypes=[("CSV", "*.csv"), ("Texto", "*.txt")], title="Guardar Reporte")
         if not filename: return
+
         try:
+            sql = "SELECT fecha_hora, temperatura, humedad, presion, dispositivo_id FROM mediciones WHERE fecha_hora BETWEEN %s AND %s ORDER BY fecha_hora ASC"
+            cursor_db.execute(sql, (s_iso, e_iso))
+            rows = cursor_db.fetchall()
+            
+            if not rows: messagebox.showinfo("Info", "Sin datos en ese rango."); return
+
             is_csv = filename.endswith(".csv")
             delimiter = ',' if is_csv else '\t'
             with open(filename, mode='w', newline='', encoding='utf-8') as f:
                 writer = csv.writer(f, delimiter=delimiter)
                 writer.writerow(["Fecha", "Temperatura (K)", "Humedad (%)", "Presion (Pa)", "Device ID"])
-                for item in items:
-                    vals = self.tree_hist.item(item)['values']
-                    fecha = vals[0]; hum = vals[2]
-                    # Obtenemos el ID directamente de la tabla (índice 4)
-                    dev_id = vals[4] 
-
-                    # Re-parseo para unidades SI
-                    raw_t_str = vals[1].split()[0]
-                    raw_p_str = vals[3].split()[0]
-                    unit_t = vals[1].split()[1]
-                    t_val = float(raw_t_str)
-                    p_val = float(raw_p_str)
-                    
-                    t_si = t_val
-                    p_si = p_val
-                    if "°C" in unit_t: t_si = t_val + 273.15
-                    elif "°F" in unit_t: t_si = (t_val - 32) * 5/9 + 273.15
-                    if "hPa" in vals[3]: p_si = p_val * 100.0
-                    
-                    writer.writerow([fecha, f"{t_si:.2f}", hum, f"{p_si:.0f}", dev_id])
-            messagebox.showinfo("Éxito", "Exportado en Unidades SI (K/Pa).")
-        except Exception as e: messagebox.showerror("Error", str(e))
+                for r in rows:
+                    writer.writerow([r[0], f"{r[1]:.2f}", r[2], f"{r[3]:.0f}", r[4]])
+            messagebox.showinfo("Éxito", f"Reporte generado: {len(rows)} registros.")
+        except Exception as err: messagebox.showerror("Error", str(err))
 
     def setup_settings_tab(self):
         self.tab_settings.grid_columnconfigure(0, weight=1)
@@ -330,16 +371,23 @@ class ProfessionalLogger(ctk.CTk):
         ctk.CTkLabel(frame, text="Velocidad (ms):").pack(anchor="w", padx=20, pady=(15,0))
         self.slider = ctk.CTkSlider(frame, from_=100, to=2000, number_of_steps=20, command=self.update_rate); self.slider.set(self.refresh_rate); self.slider.pack(anchor="w", padx=20, pady=5)
         self.lbl_rate = ctk.CTkLabel(frame, text=f"{self.refresh_rate} ms"); self.lbl_rate.pack(anchor="w", padx=20)
+        
         frame_dev = ctk.CTkFrame(self.tab_settings); frame_dev.pack(fill="x", padx=20, pady=20)
-        ctk.CTkLabel(frame_dev, text="Renombrar Dispositivo", font=("Arial", 14, "bold")).pack(anchor="w", padx=10, pady=10)
-        self.entry_nick = ctk.CTkEntry(frame_dev, placeholder_text="Nuevo Alias"); self.entry_nick.pack(side="left", padx=20, pady=10)
-        ctk.CTkButton(frame_dev, text="Guardar Alias", command=self.guardar_alias).pack(side="left")
+        ctk.CTkLabel(frame_dev, text="Guardar Alias en Chip ESP32", font=("Arial", 14, "bold")).pack(anchor="w", padx=10, pady=10)
+        ctk.CTkLabel(frame_dev, text="(El dispositivo se reiniciará)", font=("Arial", 10)).pack(anchor="w", padx=10)
+        self.entry_nick = ctk.CTkEntry(frame_dev, placeholder_text="Nuevo Alias (Hardware)"); self.entry_nick.pack(side="left", padx=20, pady=10)
+        ctk.CTkButton(frame_dev, text="GUARDAR EN CHIP", fg_color="#C62828", hover_color="#B71C1C", command=self.guardar_alias_hardware).pack(side="left")
 
     def update_rate(self, val): self.refresh_rate = int(val); self.lbl_rate.configure(text=f"{int(val)} ms")
-    def guardar_alias(self):
-        if val_id_locked is None: messagebox.showwarning("!", "No hay ID."); return
+    
+    def guardar_alias_hardware(self):
+        if not self.is_connected or not arduino: messagebox.showwarning("!", "Conecta el dispositivo."); return
         new = self.entry_nick.get()
-        if new: guardar_apodo(val_id_locked, new); apodos_cache[val_id_locked] = new; self.var_alias_display.set(new); self.entry_nick.delete(0, 'end'); messagebox.showinfo("OK", "Guardado.")
+        if new:
+            cmd = f"SET_NAME:{new}\n"
+            arduino.write(cmd.encode())
+            messagebox.showinfo("Enviado", "Comando enviado. ESP32 reiniciando...")
+            self.entry_nick.delete(0, 'end')
 
     def redraw_graphs(self, _=None):
         self.fig.clear()
@@ -389,10 +437,12 @@ class ProfessionalLogger(ctk.CTk):
 
     def update_ui_loop(self):
         if self.is_connected:
-            current_alias = apodos_cache.get(val_id_locked, "Sin Apodo")
             self.var_id_display.set(val_id_locked if val_id_locked else "Esperando...")
-            self.var_alias_display.set(current_alias)
-            self.lbl_flow.configure(text=f"Live ID: {val_live_id} | Paquetes: {paquetes_recibidos}")
+            self.var_alias_display.set(val_alias_hardware) 
+            # --- FIX: ERROR NAME ---
+            # Aseguramos que val_id_locked tenga un valor string para el label
+            current_id = val_id_locked if val_id_locked else "---"
+            self.lbl_flow.configure(text=f"Live ID: {current_id} | Paquetes: {paquetes_recibidos}")
         else: self.lbl_flow.configure(text="Desconectado.")
 
         t_show, u_t, p_show, u_p = self.get_converted_vals(val_temp, val_pres)
@@ -410,12 +460,9 @@ class ProfessionalLogger(ctk.CTk):
             times = session_data["time"][start_idx:]
             plot_temps = []; plot_press = []
             for i in range(start_idx, len(session_data["time"])):
-                # --- CORRECCIÓN FINAL ---
                 res = self.get_converted_vals(session_data["temp"][i], session_data["pres"][i])
-                ts = res[0] # Valor Num Temp
-                ps = res[2] # Valor Num Pres
+                ts = res[0]; ps = res[2]
                 plot_temps.append(ts); plot_press.append(ps)
-            
             hums = session_data["hum"][start_idx:]
 
             if 't' in self.lines_dict: 

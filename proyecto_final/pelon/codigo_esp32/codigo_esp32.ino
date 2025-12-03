@@ -4,7 +4,9 @@
 #include <Adafruit_Sensor.h>
 #include <Adafruit_BME280.h>
 #include <WiFi.h>
+#include <Preferences.h> // LIBRERÍA PARA GUARDAR EN MEMORIA PERMANENTE
 
+// --- Configuración ---
 #define SDA_PIN 21
 #define SCL_PIN 22
 #define BUTTON_PIN 4
@@ -13,10 +15,10 @@
 
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 Adafruit_BME280 bme;
+Preferences preferences; // Objeto para memoria no volatil
 
 // Variables
 unsigned long startTime;
-// Variables Hora
 int realHour = 0, realMin = 0, realSec = 0;
 unsigned long lastTimeSync = 0;
 
@@ -25,7 +27,9 @@ int lastButtonState = HIGH;
 int buttonState;
 unsigned long lastDebounceTime = 0;
 unsigned long debounceDelay = 50;
+
 String macAddress; 
+String deviceNickname = "SinNombre"; // Apodo por defecto
 
 void mostrarSoloTemperatura(float tempC);
 void mostrarSoloHumedad(float hum);
@@ -34,12 +38,17 @@ void mostrarLogoPelon();
 
 void setup() {
   Serial.begin(115200);
-  // --- FIX CRÍTICO: Timeout corto para no bloquear datos ---
   Serial.setTimeout(50); 
-  // --------------------------------------------------------
   
   pinMode(BUTTON_PIN, INPUT_PULLUP);
   WiFi.mode(WIFI_STA); 
+
+  // --- 1. INICIAR MEMORIA PERMANENTE ---
+  // "config" es el nombre del espacio de nombres (namespace)
+  preferences.begin("config", false); 
+  // Leer el apodo guardado. Si no existe, usa "SinNombre"
+  deviceNickname = preferences.getString("nick", "SinNombre");
+  // -------------------------------------
 
   Wire.begin(SDA_PIN, SCL_PIN);
   if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) { for(;;); }
@@ -55,30 +64,46 @@ void setup() {
   // Pantalla de carga
   display.clearDisplay();
   display.setTextSize(1); display.setTextColor(WHITE);
-  display.setCursor(0,10); display.println("SISTEMA PELON");
-  display.setCursor(0,30); display.println("ID MAC:");
-  display.setCursor(0,45); display.println(macAddress);
+  display.setCursor(0,0); display.println("SISTEMA PELON");
+  display.setCursor(0,20); display.println("ID MAC:");
+  display.setCursor(0,30); display.println(macAddress);
+  display.setCursor(0,50); display.print("Alias: "); display.println(deviceNickname);
   display.display();
-  delay(1000);
+  delay(1500);
 
   startTime = millis();
   lastTimeSync = millis(); 
 }
 
 void loop() {
-  // --- 1. LECTURA NO BLOQUEANTE DE HORA ---
+  // --- 2. ESCUCHAR COMANDOS DE PYTHON (HORA Y ALIAS) ---
   if (Serial.available() > 0) {
     String input = Serial.readStringUntil('\n');
-    input.trim(); // Quitar espacios basura
+    input.trim();
+    
+    // Sincronizar Hora
     if (input.startsWith("T:")) {
       realHour = input.substring(2, 4).toInt();
       realMin = input.substring(5, 7).toInt();
       realSec = input.substring(8, 10).toInt();
       lastTimeSync = millis(); 
     }
+    
+    // GUARDAR NUEVO APODO EN MEMORIA
+    if (input.startsWith("SET_NAME:")) {
+      String newName = input.substring(9);
+      if (newName.length() > 0) {
+        preferences.putString("nick", newName); // Guardar permanentemente
+        display.clearDisplay();
+        display.setCursor(0,20); display.println("Guardando Alias...");
+        display.setCursor(0,40); display.println(newName);
+        display.display();
+        delay(1000);
+        ESP.restart(); // Reiniciar para aplicar cambios limpios
+      }
+    }
   }
 
-  // Actualizar reloj local
   unsigned long delta = (millis() - lastTimeSync) / 1000;
   long totalSec = realHour * 3600L + realMin * 60L + realSec + delta;
   int currentSec = totalSec % 60;
@@ -89,11 +114,13 @@ void loop() {
   float hum = bme.readHumidity();
   float presHPa = bme.readPressure() / 100.0F; 
 
-  // --- 2. ENVIAR DATOS (ID SIEMPRE PRIMERO) ---
-  // IMPORTANTE: Enviamos todo en una sola línea o en bloque compacto
-  Serial.print("ID:"); Serial.println(macAddress);
+  // --- 3. ENVIAR ID COMPUESTO (MAC + APODO) ---
+  // Formato: ID:MAC|APODO
+  Serial.print("ID:"); 
+  Serial.print(macAddress);
+  Serial.print("|");
+  Serial.println(deviceNickname);
   
-  // Datos: Timestamp, Temp, Hum, Pres
   Serial.print(millis()); Serial.print(",");
   Serial.print(tempC, 2); Serial.print(",");
   Serial.print(hum, 2); Serial.print(",");
@@ -132,15 +159,14 @@ void loop() {
     case 3: mostrarLogoPelon(); break;
   }
   display.display();
-  delay(500); // 0.5s para mayor fluidez
+  delay(500); 
 }
 
-// Funciones Auxiliares (SI Units)
 void mostrarSoloTemperatura(float tempC) {
   float tempK = tempC + 273.15;
   display.setCursor(0, 25); display.setTextSize(3);
   display.print(tempK, 1); display.setTextSize(2); display.println(" K");
-  display.setTextSize(1); display.setCursor(0, 55); display.print("TEMP (SI)");
+  display.setTextSize(1); display.setCursor(0, 55); display.print("TEMPERATURA (SI)");
 }
 void mostrarSoloHumedad(float hum) {
   display.setCursor(0, 25); display.setTextSize(3);

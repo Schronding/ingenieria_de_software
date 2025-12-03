@@ -31,8 +31,8 @@ DB_NAME = "sensores"
 
 # VARIABLES GLOBALES
 session_data = { "time": [], "temp": [], "hum": [], "pres": [] }
-val_id_locked = None          # Aquí se guardará la MAC
-val_alias_hardware = "---"    # Aquí el apodo del chip
+val_id_locked = None          
+val_alias_hardware = "---"    
 val_temp = 0.0
 val_hum = 0.0
 val_pres = 0.0
@@ -69,8 +69,7 @@ def hilo_receptor():
                 if arduino.in_waiting > 0:
                     try:
                         linea = arduino.readline().decode('utf-8', errors='ignore').strip()
-                    except:
-                        continue
+                    except: continue
                     
                     # --- 1. DETECCIÓN DE ID ---
                     if linea.startswith("ID:") or linea.startswith("ID_THB:"):
@@ -82,8 +81,7 @@ def hilo_receptor():
                                 val_alias_hardware = parts[1].strip()
                             else:
                                 val_id_locked = clean_content.strip()
-                        except: 
-                            pass
+                        except: pass
                         continue 
 
                     # --- 2. DETECCIÓN DE DATOS ---
@@ -109,17 +107,16 @@ def hilo_receptor():
                                         temp_k = t + 273.15
                                         pres_pa = p * 100.0
                                         dispositivo = val_id_locked if val_id_locked else "Desconocido"
-                                        sql = "INSERT INTO mediciones (temperatura, humedad, presion, fecha_hora, dispositivo_id) VALUES (%s, %s, %s, %s, %s)"
-                                        cursor_db.execute(sql, (temp_k, h, pres_pa, ahora, dispositivo))
+                                        # Guardamos tambien el ALIAS
+                                        alias_db = val_alias_hardware if val_alias_hardware != "---" else "SinAlias"
+                                        
+                                        sql = "INSERT INTO mediciones (temperatura, humedad, presion, fecha_hora, dispositivo_id, alias) VALUES (%s, %s, %s, %s, %s, %s)"
+                                        cursor_db.execute(sql, (temp_k, h, pres_pa, ahora, dispositivo, alias_db))
                                         conexion_db.commit()
-                                    except: 
-                                        pass
-                            except ValueError: 
-                                continue 
-            except Exception: 
-                time.sleep(0.1)
-        else: 
-            time.sleep(0.1)
+                                    except: pass
+                            except ValueError: continue 
+            except Exception: time.sleep(0.1)
+        else: time.sleep(0.1)
 
 class ProfessionalLogger(ctk.CTk):
     def __init__(self):
@@ -194,7 +191,8 @@ class ProfessionalLogger(ctk.CTk):
         ctk.CTkButton(status_frame, text="Reconectar", width=80, height=20, fg_color="#00695C", command=self.reconectar_db).pack(side="right")
 
     def init_main_area(self):
-        self.tabview = ctk.CTkTabview(self, corner_radius=10)
+        # Configuramos el evento de cambio de pestaña para cerrar calendarios
+        self.tabview = ctk.CTkTabview(self, corner_radius=10, command=self.on_tab_change)
         self.tabview.grid(row=0, column=1, padx=20, pady=10, sticky="nsew")
         self.tab_dash = self.tabview.add("Monitor en Vivo")
         self.tab_history = self.tabview.add("Historial & Reportes")
@@ -202,6 +200,11 @@ class ProfessionalLogger(ctk.CTk):
         self.setup_dashboard_tab()
         self.setup_history_tab()
         self.setup_settings_tab()
+
+    def on_tab_change(self):
+        # Al cambiar de pestaña, forzamos el foco a la ventana principal.
+        # Esto hace que los widgets DateEntry (calendarios) se cierren automáticamente.
+        self.focus()
 
     def init_footer(self):
         self.log_frame = ctk.CTkFrame(self, height=30, corner_radius=0, fg_color="#1a1a1a")
@@ -255,107 +258,118 @@ class ProfessionalLogger(ctk.CTk):
         self.tab_history.grid_columnconfigure(0, weight=1)
         self.tab_history.grid_rowconfigure(2, weight=1)
         
+        # --- ZONA 1: VISUALIZAR EN TABLA (AHORA CON CALENDARIO) ---
         filter_frame = ctk.CTkFrame(self.tab_history)
         filter_frame.grid(row=0, column=0, sticky="ew", padx=10, pady=10)
-        ctk.CTkLabel(filter_frame, text="Ver Últimos:", font=("Arial", 12, "bold")).pack(side="left", padx=10)
-        ctk.CTkButton(filter_frame, text="1 Hora", width=60, command=lambda: self.set_range("hora")).pack(side="left", padx=5)
-        ctk.CTkButton(filter_frame, text="Hoy", width=60, command=lambda: self.set_range("hoy")).pack(side="left", padx=5)
         
-        # Boton "VER" (Visualizar Datos) solicitado
-        ctk.CTkLabel(filter_frame, text="|").pack(side="left", padx=10)
-        self.entry_start = ctk.CTkEntry(filter_frame, width=130, placeholder_text="Inicio YYYY-MM-DD")
-        self.entry_start.pack(side="left", padx=2)
-        self.entry_end = ctk.CTkEntry(filter_frame, width=130, placeholder_text="Fin YYYY-MM-DD")
-        self.entry_end.pack(side="left", padx=2)
-        ctk.CTkButton(filter_frame, text="VISUALIZAR", fg_color="#FBC02D", text_color="black", hover_color="#F9A825", command=self.consultar_db_seguro).pack(side="left", padx=5)
+        ctk.CTkLabel(filter_frame, text="Visualizar en Tabla:", font=("Arial", 12, "bold"), text_color="#4FC3F7").pack(side="left", padx=10)
+        
+        # Inicio Visualizar
+        self.cal_vis_start = DateEntry(filter_frame, width=10, background='darkblue', foreground='white', borderwidth=2, date_pattern='y-mm-dd')
+        self.cal_vis_start.pack(side="left", padx=2)
+        self.spin_vis_h_s = ctk.CTkComboBox(filter_frame, values=[f"{i:02d}" for i in range(24)], width=55); self.spin_vis_h_s.set("00"); self.spin_vis_h_s.pack(side="left")
+        self.spin_vis_m_s = ctk.CTkComboBox(filter_frame, values=[f"{i:02d}" for i in range(60)], width=55); self.spin_vis_m_s.set("00"); self.spin_vis_m_s.pack(side="left")
+        
+        ctk.CTkLabel(filter_frame, text="➜").pack(side="left", padx=5)
+        
+        # Fin Visualizar
+        self.cal_vis_end = DateEntry(filter_frame, width=10, background='darkblue', foreground='white', borderwidth=2, date_pattern='y-mm-dd')
+        self.cal_vis_end.pack(side="left", padx=2)
+        self.spin_vis_h_e = ctk.CTkComboBox(filter_frame, values=[f"{i:02d}" for i in range(24)], width=55); self.spin_vis_h_e.set("23"); self.spin_vis_h_e.pack(side="left")
+        self.spin_vis_m_e = ctk.CTkComboBox(filter_frame, values=[f"{i:02d}" for i in range(60)], width=55); self.spin_vis_m_e.set("59"); self.spin_vis_m_e.pack(side="left")
 
+        ctk.CTkButton(filter_frame, text="VER", width=50, fg_color="#FBC02D", text_color="black", hover_color="#F9A825", command=self.consultar_db_calendario).pack(side="left", padx=10)
+
+        # --- ZONA 2: EXPORTAR (CON CALENDARIO) ---
         export_frame = ctk.CTkFrame(self.tab_history, fg_color="#263238")
         export_frame.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 10))
         
-        ctk.CTkLabel(export_frame, text="EXPORTAR PERIODO:", font=("Arial", 12, "bold"), text_color="#80CBC4").grid(row=0, column=0, padx=10, pady=10, sticky="w")
+        ctk.CTkLabel(export_frame, text="EXPORTAR REPORTE:", font=("Arial", 12, "bold"), text_color="#80CBC4").grid(row=0, column=0, padx=10, pady=10, sticky="w")
         
         f_start = ctk.CTkFrame(export_frame, fg_color="transparent")
         f_start.grid(row=0, column=1, padx=5)
         ctk.CTkLabel(f_start, text="Desde:").pack(anchor="w")
-        self.cal_start = DateEntry(f_start, width=12, background='darkblue', foreground='white', borderwidth=2, date_pattern='y-mm-dd')
-        self.cal_start.pack(side="left")
-        self.spin_hour_s = ctk.CTkComboBox(f_start, values=[f"{i:02d}" for i in range(24)], width=60); self.spin_hour_s.set("00"); self.spin_hour_s.pack(side="left", padx=2)
-        ctk.CTkLabel(f_start, text=":").pack(side="left")
-        self.spin_min_s = ctk.CTkComboBox(f_start, values=[f"{i:02d}" for i in range(60)], width=60); self.spin_min_s.set("00"); self.spin_min_s.pack(side="left", padx=2)
+        self.cal_exp_start = DateEntry(f_start, width=12, background='darkblue', foreground='white', borderwidth=2, date_pattern='y-mm-dd')
+        self.cal_exp_start.pack(side="left")
+        self.spin_exp_h_s = ctk.CTkComboBox(f_start, values=[f"{i:02d}" for i in range(24)], width=60); self.spin_exp_h_s.set("00"); self.spin_exp_h_s.pack(side="left")
+        self.spin_exp_m_s = ctk.CTkComboBox(f_start, values=[f"{i:02d}" for i in range(60)], width=60); self.spin_exp_m_s.set("00"); self.spin_exp_m_s.pack(side="left")
 
         f_end = ctk.CTkFrame(export_frame, fg_color="transparent")
         f_end.grid(row=0, column=2, padx=5)
         ctk.CTkLabel(f_end, text="Hasta:").pack(anchor="w")
-        self.cal_end = DateEntry(f_end, width=12, background='darkblue', foreground='white', borderwidth=2, date_pattern='y-mm-dd')
-        self.cal_end.pack(side="left")
-        self.spin_hour_e = ctk.CTkComboBox(f_end, values=[f"{i:02d}" for i in range(24)], width=60); self.spin_hour_e.set("23"); self.spin_hour_e.pack(side="left", padx=2)
-        ctk.CTkLabel(f_end, text=":").pack(side="left")
-        self.spin_min_e = ctk.CTkComboBox(f_end, values=[f"{i:02d}" for i in range(60)], width=60); self.spin_min_e.set("59"); self.spin_min_e.pack(side="left", padx=2)
+        self.cal_exp_end = DateEntry(f_end, width=12, background='darkblue', foreground='white', borderwidth=2, date_pattern='y-mm-dd')
+        self.cal_exp_end.pack(side="left")
+        self.spin_exp_h_e = ctk.CTkComboBox(f_end, values=[f"{i:02d}" for i in range(24)], width=60); self.spin_exp_h_e.set("23"); self.spin_exp_h_e.pack(side="left")
+        self.spin_exp_m_e = ctk.CTkComboBox(f_end, values=[f"{i:02d}" for i in range(60)], width=60); self.spin_exp_m_e.set("59"); self.spin_exp_m_e.pack(side="left")
 
-        ctk.CTkButton(export_frame, text="GENERAR REPORTE (SI)", fg_color="#00897B", hover_color="#00695C", command=self.exportar_rango_calendario).grid(row=0, column=3, padx=20)
+        ctk.CTkButton(export_frame, text="GENERAR (SI)", fg_color="#00897B", hover_color="#00695C", command=self.exportar_rango_calendario).grid(row=0, column=3, padx=20)
 
-        self.tree_hist = ttk.Treeview(self.tab_history, columns=("fecha", "temp", "hum", "pres", "dev"), show="headings")
-        self.tree_hist.heading("fecha", text="Fecha Hora"); self.tree_hist.column("fecha", width=160)
-        self.tree_hist.heading("temp", text="Temp"); self.tree_hist.column("temp", width=80)
+        # TABLA
+        self.tree_hist = ttk.Treeview(self.tab_history, columns=("fecha", "temp", "hum", "pres", "dev", "ali"), show="headings")
+        self.tree_hist.heading("fecha", text="Fecha Hora"); self.tree_hist.column("fecha", width=140)
+        self.tree_hist.heading("temp", text="Temp"); self.tree_hist.column("temp", width=70)
         self.tree_hist.heading("hum", text="Hum"); self.tree_hist.column("hum", width=60)
         self.tree_hist.heading("pres", text="Presion"); self.tree_hist.column("pres", width=80)
-        self.tree_hist.heading("dev", text="ID Disp"); self.tree_hist.column("dev", width=150) 
+        self.tree_hist.heading("dev", text="MAC"); self.tree_hist.column("dev", width=110) 
+        self.tree_hist.heading("ali", text="Alias"); self.tree_hist.column("ali", width=100) 
         self.tree_hist.grid(row=2, column=0, sticky="nsew", padx=10, pady=10)
 
-    def set_range(self, mode):
-        now = datetime.now()
-        start, end = "", ""
-        if mode == "hora": start = (now - timedelta(hours=1))
-        elif mode == "hoy": start = now.replace(hour=0, minute=0, second=0)
-        self.consultar_db_directo(start.strftime("%Y-%m-%d %H:%M:%S"), now.strftime("%Y-%m-%d %H:%M:%S"))
+    # --- CONSULTA VISUALIZAR CON CALENDARIO ---
+    def consultar_db_calendario(self):
+        # Construir strings desde los widgets de Visualizar
+        d_s = self.cal_vis_start.get_date(); t_s = f"{self.spin_vis_h_s.get()}:{self.spin_vis_m_s.get()}:00"
+        d_e = self.cal_vis_end.get_date(); t_e = f"{self.spin_vis_h_e.get()}:{self.spin_vis_m_e.get()}:59"
+        
+        self.ejecutar_consulta_db(f"{d_s} {t_s}", f"{d_e} {t_e}")
 
-    def consultar_db_seguro(self):
-        s = self.entry_start.get()
-        e = self.entry_end.get()
-        if not s or not e:
-            messagebox.showwarning("!", "Define fechas YYYY-MM-DD")
-            return
-        self.consultar_db_directo(s + " 00:00:00", e + " 23:59:59")
-
-    def consultar_db_directo(self, s, e):
+    def ejecutar_consulta_db(self, start_iso, end_iso):
         global cursor_db
         for item in self.tree_hist.get_children(): self.tree_hist.delete(item)
         try:
-            sql = "SELECT fecha_hora, temperatura, humedad, presion, dispositivo_id FROM mediciones WHERE fecha_hora BETWEEN %s AND %s ORDER BY fecha_hora DESC LIMIT 200"
-            cursor_db.execute(sql, (s, e))
+            # Traemos tambien el ALIAS (columna 5)
+            sql = "SELECT fecha_hora, temperatura, humedad, presion, dispositivo_id, alias FROM mediciones WHERE fecha_hora BETWEEN %s AND %s ORDER BY fecha_hora DESC LIMIT 500"
+            cursor_db.execute(sql, (start_iso, end_iso))
             rows = cursor_db.fetchall()
+            
             for r in rows:
                 t_show, u_t, p_show, u_p = self.get_converted_vals(0, 0)
+                # Conversión visual
                 if self.unit_mode == 0: t_show = r[1] - 273.15; p_show = r[3] / 100.0
                 elif self.unit_mode == 1: t_show = (r[1] - 273.15) * 9/5 + 32; p_show = r[3] / 100.0
                 elif self.unit_mode == 2: t_show = r[1]; p_show = r[3]
-                self.tree_hist.insert("", "end", values=(r[0], f"{t_show:.2f} {u_t}", r[2], f"{p_show:.1f} {u_p}", r[4]))
-        except: pass
+                
+                alias_val = r[5] if r[5] else "---"
+                self.tree_hist.insert("", "end", values=(r[0], f"{t_show:.2f} {u_t}", r[2], f"{p_show:.1f} {u_p}", r[4], alias_val))
+                
+            if not rows: messagebox.showinfo("Info", "Sin datos en ese periodo.")
+        except Exception as e:
+            self.reconectar_db()
 
+    # --- EXPORTAR CON CALENDARIO ---
     def exportar_rango_calendario(self):
-        d_s = self.cal_start.get_date(); t_s = f"{self.spin_hour_s.get()}:{self.spin_min_s.get()}:00"
-        d_e = self.cal_end.get_date(); t_e = f"{self.spin_hour_e.get()}:{self.spin_min_e.get()}:59"
+        # Construir strings desde los widgets de Exportar
+        d_s = self.cal_exp_start.get_date(); t_s = f"{self.spin_exp_h_s.get()}:{self.spin_exp_m_s.get()}:00"
+        d_e = self.cal_exp_end.get_date(); t_e = f"{self.spin_exp_h_e.get()}:{self.spin_exp_m_e.get()}:59"
         
-        s_iso = f"{d_s} {t_s}"
-        e_iso = f"{d_e} {t_e}"
-
         filename = filedialog.asksaveasfilename(defaultextension=".csv", filetypes=[("CSV", "*.csv"), ("Texto", "*.txt")], title="Guardar Reporte")
         if not filename: return
 
         try:
-            sql = "SELECT fecha_hora, temperatura, humedad, presion, dispositivo_id FROM mediciones WHERE fecha_hora BETWEEN %s AND %s ORDER BY fecha_hora ASC"
-            cursor_db.execute(sql, (s_iso, e_iso))
+            sql = "SELECT fecha_hora, temperatura, humedad, presion, dispositivo_id, alias FROM mediciones WHERE fecha_hora BETWEEN %s AND %s ORDER BY fecha_hora ASC"
+            cursor_db.execute(sql, (f"{d_s} {t_s}", f"{d_e} {t_e}"))
             rows = cursor_db.fetchall()
             
-            if not rows: messagebox.showinfo("Info", "Sin datos en ese rango."); return
+            if not rows: messagebox.showinfo("Info", "Sin datos."); return
 
             is_csv = filename.endswith(".csv")
             delimiter = ',' if is_csv else '\t'
             with open(filename, mode='w', newline='', encoding='utf-8') as f:
                 writer = csv.writer(f, delimiter=delimiter)
-                writer.writerow(["Fecha", "Temperatura (K)", "Humedad (%)", "Presion (Pa)", "Device ID"])
+                writer.writerow(["Fecha", "Temperatura (K)", "Humedad (%)", "Presion (Pa)", "MAC Address", "Alias"])
                 for r in rows:
-                    writer.writerow([r[0], f"{r[1]:.2f}", r[2], f"{r[3]:.0f}", r[4]])
+                    alias_val = r[5] if r[5] else "---"
+                    # Exportamos SIEMPRE en SI (K y Pa)
+                    writer.writerow([r[0], f"{r[1]:.2f}", r[2], f"{r[3]:.0f}", r[4], alias_val])
             messagebox.showinfo("Éxito", f"Reporte generado: {len(rows)} registros.")
         except Exception as err: messagebox.showerror("Error", str(err))
 
@@ -439,8 +453,6 @@ class ProfessionalLogger(ctk.CTk):
         if self.is_connected:
             self.var_id_display.set(val_id_locked if val_id_locked else "Esperando...")
             self.var_alias_display.set(val_alias_hardware) 
-            # --- FIX: ERROR NAME ---
-            # Aseguramos que val_id_locked tenga un valor string para el label
             current_id = val_id_locked if val_id_locked else "---"
             self.lbl_flow.configure(text=f"Live ID: {current_id} | Paquetes: {paquetes_recibidos}")
         else: self.lbl_flow.configure(text="Desconectado.")
